@@ -1,0 +1,8 @@
+{
+  "name": "Remix: SMC Scalp Bot",
+  "description": "XAUUSD scalping bot via SMC strategy (BOS, CHOCH, FVG). Includes Python FastAPI and React Frontend.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
