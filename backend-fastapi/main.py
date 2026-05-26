@@ -47,7 +47,7 @@ YF_SYMBOL = "GC=F"
 DB_PATH = "smc_bot.db"
 
 def get_db_connection():
-    return sqlite3.connect(DB_PATH, timeout=20.0, isolation_level=None)
+    return sqlite3.connect(DB_PATH, timeout=30.0, isolation_level=None, check_same_thread=False)
 
 def init_db():
     conn = get_db_connection()
@@ -162,10 +162,10 @@ async def fetch_twelvedata(interval: str, outputsize: int = 50, max_retries: int
                     try:
                         latest_time = pd.to_datetime(dt_str).tz_localize(None)
                         elapsed_mins = (datetime.utcnow() - latest_time).total_seconds() / 60.0
-                        if elapsed_mins > 60: # API data too old
-                            raise Exception("Stale candle data detected (> 60m old)")
+                        if elapsed_mins > 15: # API data too old
+                            raise Exception(f"Stale candle data detected (> 15m old: {elapsed_mins:.1f}m)")
                     except Exception as e:
-                        pass
+                        if "Stale" in str(e): raise e
                         
                 return list(reversed(candles)) # Oldest to newest
             except Exception as e:
@@ -247,7 +247,8 @@ def is_displacement_candle(df: pd.DataFrame, idx: int, atr: float, direction: st
         return False
         
     # 2. Candle Range Expansion (should be a decently sized candle)
-    if candle_range < atr * 0.8:
+    # HARD REJECT: candle_range < ATR * 1.2
+    if candle_range < atr * 1.2:
         return False
         
     # 3. Body Dominance Filter (Body takes up majority of the candle)
@@ -341,32 +342,31 @@ def detect_institutional_choch(df: pd.DataFrame, bias: str, atr: float, sh: list
     - Inducement validation (Sweep quality > 0.1 ATR)
     - Fake reversal rejection (Displacement validation on breakout)
     """
-    if len(sh) < 3 or len(sl) < 3:
+    if len(sh) < 4 or len(sl) < 4:
         return {"valid": False, "sweep": False}
         
-    last_sh = sh[-1]
-    last_sl = sl[-1]
-    prev_sh = sh[-2]
-    prev_sl = sl[-2]
+    # Separate into External (Major) and Internal (Minor) structures
+    ext_sh = sh[-2]
+    ext_sl = sl[-2]
+    int_sh = sh[-1]
+    int_sl = sl[-1]
     
     liq_sweep = False
     
     for i in range(max(1, len(df)-15), len(df)-1):
         if bias == "bullish":
-            # 1. Sweep Quality & Inducement Validation
-            # Sweeps prev_sl (Inducement / External Low) but must close above it (Rejection)
-            sweep_depth = prev_sl['price'] - df['low'].iloc[i]
-            is_valid_sweep_candle = df['low'].iloc[i] < prev_sl['price'] and df['close'].iloc[i] > prev_sl['price']
+            # 1. Sweep Quality & Inducement Validation (Must sweep External Low)
+            sweep_depth = ext_sl['price'] - df['low'].iloc[i]
+            is_valid_sweep_candle = df['low'].iloc[i] < ext_sl['price'] and df['close'].iloc[i] > ext_sl['price']
             
             if is_valid_sweep_candle and sweep_depth > (atr * 0.1):
                 liq_sweep = True
                 
-                # 2. Internal Structure Break (CHOCH)
-                # After the sweep, does price break the last internal swing high?
+                # 2. Internal Structure Break (CHOCH) - Must break Internal High
                 for j in range(i+1, len(df)):
                     # Breakout distance Check (Fake reversal rejection)
-                    breakout_distance = df['close'].iloc[j] - last_sh['price']
-                    candle_breaks_struct = breakout_distance > (atr * 0.15) and df['close'].iloc[j-1] <= last_sh['price']
+                    breakout_distance = df['close'].iloc[j] - int_sh['price']
+                    candle_breaks_struct = breakout_distance > (atr * 0.15) and df['close'].iloc[j-1] <= int_sh['price']
                     
                     if candle_breaks_struct:
                         # 3. Displacement & Momentum Validation
@@ -374,18 +374,17 @@ def detect_institutional_choch(df: pd.DataFrame, bias: str, atr: float, sh: list
                             return {"valid": True, "sweep": True}
                             
         elif bias == "bearish":
-            # 1. Sweep Quality & Inducement Validation
-            # Sweeps prev_sh (Inducement / External High) but must close below it (Rejection)
-            sweep_depth = df['high'].iloc[i] - prev_sh['price']
-            is_valid_sweep_candle = df['high'].iloc[i] > prev_sh['price'] and df['close'].iloc[i] < prev_sh['price']
+            # 1. Sweep Quality & Inducement Validation (Must sweep External High)
+            sweep_depth = df['high'].iloc[i] - ext_sh['price']
+            is_valid_sweep_candle = df['high'].iloc[i] > ext_sh['price'] and df['close'].iloc[i] < ext_sh['price']
             
             if is_valid_sweep_candle and sweep_depth > (atr * 0.1):
                 liq_sweep = True
                 
-                # 2. Internal Structure Break (CHOCH)
+                # 2. Internal Structure Break (CHOCH) - Must break Internal Low
                 for j in range(i+1, len(df)):
-                    breakout_distance = last_sl['price'] - df['close'].iloc[j]
-                    candle_breaks_struct = breakout_distance > (atr * 0.15) and df['close'].iloc[j-1] >= last_sl['price']
+                    breakout_distance = int_sl['price'] - df['close'].iloc[j]
+                    candle_breaks_struct = breakout_distance > (atr * 0.15) and df['close'].iloc[j-1] >= int_sl['price']
                     
                     if candle_breaks_struct:
                         # 3. Displacement & Momentum Validation
@@ -418,7 +417,9 @@ def detect_institutional_fvg(df: pd.DataFrame, bias: str, atr: float) -> dict:
                 body = df['close'].iloc[i+1] - df['open'].iloc[i+1]
                 
                 # 2. Minimum Imbalance Size & Displacement
-                if fvg_gap > (atr * 0.15) and body > (atr * 0.5):
+                # HARD REJECT: fvg_size < ATR * 0.15
+                if fvg_gap < (atr * 0.15): continue
+                if body > (atr * 0.5):
                     fvg_zone = (float(df['high'].iloc[i]), float(df['low'].iloc[i+2]))
                     midpoint = (fvg_zone[0] + fvg_zone[1]) / 2
                     
@@ -441,7 +442,9 @@ def detect_institutional_fvg(df: pd.DataFrame, bias: str, atr: float) -> dict:
                 body = df['open'].iloc[i+1] - df['close'].iloc[i+1]
                 
                 # 2. Minimum Imbalance Size & Displacement
-                if fvg_gap > (atr * 0.15) and body > (atr * 0.5):
+                # HARD REJECT: fvg_size < ATR * 0.15
+                if fvg_gap < (atr * 0.15): continue
+                if body > (atr * 0.5):
                     fvg_zone = (float(df['low'].iloc[i]), float(df['high'].iloc[i+2]))
                     midpoint = (fvg_zone[0] + fvg_zone[1]) / 2
                     
@@ -736,17 +739,22 @@ async def process_signal():
         result = detect_smc(h1, m15, m5, m1)
         
         if result["valid"]:
-            # Duplicate Signal Protection (same direction within 30 mins)
+            # Duplicate Signal Protection (Same Direction within 15 mins limits + Exact identical timestamp hash)
             signal_type = result["type"]
-            c.execute('SELECT created_at_utc FROM signals WHERE type = ? ORDER BY id DESC LIMIT 1', (signal_type,))
+            c.execute('SELECT created_at_utc, timestamp FROM signals WHERE type = ? ORDER BY id DESC LIMIT 1', (signal_type,))
             last_same_dir = c.fetchone()
             if last_same_dir and last_same_dir[0]:
                 try:
+                    # Duplicate hashing check (same internal M1 candle timestamp or exact same generated string)
+                    if last_same_dir[1] == result.get("timestamp"):
+                        conn.close()
+                        return {"status": "no_signal", "reason": "HARD REJECT: Exact duplicate signal on same candle."}
+                        
                     last_time = datetime.fromisoformat(last_same_dir[0])
                     elapsed_same_dir = (datetime.utcnow() - last_time).total_seconds()
-                    if elapsed_same_dir < 1800: # 30 minutes
+                    if elapsed_same_dir < 900: # 15 minutes strict cooldown
                         conn.close()
-                        return {"status": "no_signal", "reason": f"HARD REJECT: Duplicate Signal Protection. Same direction '{signal_type}' within 30 mins ({int(1800 - elapsed_same_dir)}s left)"}
+                        return {"status": "no_signal", "reason": f"HARD REJECT: Repeated Signal Blocked. Same direction '{signal_type}' within 15 mins ({int(900 - elapsed_same_dir)}s left)"}
                 except ValueError:
                     pass
                     
@@ -763,14 +771,18 @@ async def process_signal():
             logger.info(f"AI APPROVED Setup. Conf: {conf}%.")
             created_at = datetime.utcnow()
             
+            # Formatting timestamp to standard Asia/Makassar
+            tz_wita = pytz.timezone('Asia/Makassar')
+            created_wita = created_at.replace(tzinfo=pytz.utc).astimezone(tz_wita)
+            
             sig_obj = {
                 "type": result["type"],
                 "entry": result["entry"],
                 "sl": result["sl"],
                 "tp1": result["tp1"],
                 "tp2": result["tp2"],
-                "created_at_utc": created_at,
-                "timestamp": created_at.isoformat() + "Z",
+                "created_at_utc": created_at.isoformat() + "Z",
+                "timestamp": created_wita.strftime('%Y-%m-%d %H:%M:%S WITA'),
                 "ai_reason": reason,
                 "confidence": conf
             }
