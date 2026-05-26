@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { api } from '../api';
-import { RefreshCcw, TrendingUp, TrendingDown, Crosshair, MapPin, StopCircle } from 'lucide-react';
+import { RefreshCcw, TrendingUp, TrendingDown, Crosshair, MapPin, StopCircle, Play, Pause } from 'lucide-react';
 import { format } from 'date-fns';
 
 export default function Dashboard({ onError }: { onError: (err: Error) => void }) {
@@ -8,6 +8,8 @@ export default function Dashboard({ onError }: { onError: (err: Error) => void }
   const [status, setStatus] = useState<'idle' | 'scanning' | 'signal' | 'waiting'>('idle');
   const [message, setMessage] = useState<string>('');
   const [stepData, setStepData] = useState({ step: '', bias: '' });
+  const [autoScan, setAutoScan] = useState<boolean>(false);
+  const autoScanRef = useRef<NodeJS.Timeout | null>(null);
   
   const scanMarket = async () => {
     setStatus('scanning');
@@ -32,16 +34,23 @@ export default function Dashboard({ onError }: { onError: (err: Error) => void }
   };
 
   useEffect(() => {
-    // auto scan disabled as per user request to prevent AI Studio runtime crash
-    // scanMarket();
-  }, []);
+    if (autoScan) {
+      // Run immediately
+      scanMarket();
+      // Then every 60 seconds
+      autoScanRef.current = setInterval(scanMarket, 60000);
+    } else {
+      if (autoScanRef.current) clearInterval(autoScanRef.current);
+    }
+    return () => {
+      if (autoScanRef.current) clearInterval(autoScanRef.current);
+    };
+  }, [autoScan]);
 
   const getStepStatus = (stepName: string) => {
     const steps = ['M15_BOS', 'FVG_WAIT', 'CHOCH_WAIT', 'AI_VALIDATION', 'SIGNAL_SENT', 'SIGNAL_CANCELLED'];
     if (stepData.step === 'SIGNAL_CANCELLED' && stepName === 'AI_VALIDATION') return 'failed';
     
-    // In our backend step represents what FAILED or is CURRENT.
-    // If step is "FVG_WAIT", it means M15_BOS succeeded, but FVG is missing.
     if (!stepData.step) return 'pending';
     if (stepData.step === 'SIGNAL_SENT') return 'success';
 
@@ -68,14 +77,24 @@ export default function Dashboard({ onError }: { onError: (err: Error) => void }
               {status === 'scanning' ? 'SCANNING STRUCTURE...' : 'MONITORING'}
             </p>
           </div>
-          <button 
-            onClick={scanMarket}
-            disabled={status === 'scanning'}
-            className="bg-amber-500 hover:bg-amber-400 text-black px-4 py-2 rounded-lg font-semibold text-xs flex items-center gap-2 transition-all disabled:opacity-50 tracking-wider shadow-[0_0_15px_rgba(245,158,11,0.2)]"
-          >
-            <RefreshCcw className={`w-3.5 h-3.5 ${status === 'scanning' ? 'animate-spin' : ''}`} />
-            FORCE SCAN
-          </button>
+          <div className="flex gap-2">
+            <button 
+              onClick={() => setAutoScan(!autoScan)}
+              className={`px-3 py-2 rounded-lg font-semibold text-xs flex items-center gap-2 transition-all tracking-wider ${autoScan ? 'bg-red-500/20 hover:bg-red-500/40 text-red-500 border border-red-500/30' : 'bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-500 border border-emerald-500/30'}`}
+              title={autoScan ? "Pause Auto-Scan" : "Enable Auto-Scan"}
+            >
+              {autoScan ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+              {autoScan ? 'AUTO' : 'AUTO'}
+            </button>
+            <button 
+              onClick={scanMarket}
+              disabled={status === 'scanning'}
+              className="bg-amber-500 hover:bg-amber-400 text-black px-4 py-2 rounded-lg font-semibold text-xs flex items-center gap-2 transition-all disabled:opacity-50 tracking-wider shadow-[0_0_15px_rgba(245,158,11,0.2)]"
+            >
+              <RefreshCcw className={`w-3.5 h-3.5 ${status === 'scanning' ? 'animate-spin' : ''}`} />
+              FORCE SCAN
+            </button>
+          </div>
         </div>
 
         {status === 'waiting' && (

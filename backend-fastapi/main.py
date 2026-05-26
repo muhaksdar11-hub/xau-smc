@@ -474,7 +474,7 @@ def detect_smc(h1_candles, m15_candles, m5_candles, m1_candles):
     df_m1 = pd.DataFrame(m1_candles)
     
     if len(df_h1) < 30 or len(df_m15) < 30 or len(df_m5) < 30 or len(df_m1) < 30:
-        return {"valid": False, "reason": "Insufficient market data to detect structure"}
+        return {"valid": False, "reason": "Insufficient market data to detect structure", "step": "M15_BOS", "bias": "neutral"}
         
     atr_h1 = calculate_atr_df(df_h1, 14)
     atr_m15 = calculate_atr_df(df_m15, 14)
@@ -482,34 +482,30 @@ def detect_smc(h1_candles, m15_candles, m5_candles, m1_candles):
     atr_m1 = calculate_atr_df(df_m1, 14)
     
     if atr_h1 == 0 or atr_m15 == 0 or atr_m5 == 0 or atr_m1 == 0:
-        return {"valid": False, "reason": "Insufficient data for dynamic ATR calculation"}
+        return {"valid": False, "reason": "Insufficient data for dynamic ATR calculation", "step": "M15_BOS", "bias": "neutral"}
         
     # === HARD REJECT LAYER ===
     # 0.1 Abnormal Volatility (ATR check)
     recent_m15_body = abs(df_m15['close'].iloc[-1] - df_m15['open'].iloc[-1])
     recent_m15_range = df_m15['high'].iloc[-1] - df_m15['low'].iloc[-1]
     
-    # Reject: Candle terlalu kecil (Dead Market)
     if recent_m15_range < (atr_m15 * 0.3):
-        return {"valid": False, "reason": "HARD REJECT: Market is dead (Recent M15 range < 30% ATR)"}
+        return {"valid": False, "reason": "HARD REJECT: Market is dead (Recent M15 range < 30% ATR)", "step": "M15_BOS", "bias": "neutral"}
         
-    # Reject: ATR abnormal (News Spike)
     if recent_m15_range > (atr_m15 * 4.0):
-        return {"valid": False, "reason": "HARD REJECT: Abnormal Volatility (Recent M15 range > 4x ATR)"}
+        return {"valid": False, "reason": "HARD REJECT: Abnormal Volatility (Recent M15 range > 4x ATR)", "step": "M15_BOS", "bias": "neutral"}
         
-    # Reject: Spread abnormal / Whiplash
     if recent_m15_range > 0 and (recent_m15_body / recent_m15_range) < 0.1 and recent_m15_range > atr_m15:
-        return {"valid": False, "reason": "HARD REJECT: Abnormal Spread / Whiplash (Doji with massive range)"}
+        return {"valid": False, "reason": "HARD REJECT: Abnormal Spread / Whiplash (Doji with massive range)", "step": "M15_BOS", "bias": "neutral"}
 
     # 1. H1 BIAS ENGINE (Institutional Direction)
     sh_h1, sl_h1 = get_swing_points(df_h1, strength=3)
     if not sh_h1 or not sl_h1:
-        return {"valid": False, "reason": "No valid H1 swing structure"}
+        return {"valid": False, "reason": "No valid H1 swing structure", "step": "M15_BOS", "bias": "neutral"}
         
     h1_bias = "neutral"
     last_sh_h1, last_sl_h1 = sh_h1[-1]['price'], sl_h1[-1]['price']
     
-    # H1 Structural Break with Displacement confirmation
     for i in range(len(df_h1)-5, len(df_h1)):
         body = abs(df_h1['close'].iloc[i] - df_h1['open'].iloc[i])
         is_displacement = body > atr_h1 * 0.5
@@ -527,7 +523,7 @@ def detect_smc(h1_candles, m15_candles, m5_candles, m1_candles):
         
     # 2. BOS & CHOCH (M15 Liquidity Sweep & Structure Shift)
     sh_15, sl_15 = get_swing_points(df_m15, strength=2)
-    if len(sh_15) < 3 or len(sl_15) < 3: return {"valid": False, "reason": "No M15 internal swing structure"}
+    if len(sh_15) < 3 or len(sl_15) < 3: return {"valid": False, "reason": "No M15 internal swing structure", "step": "M15_BOS", "bias": h1_bias}
     
     bos_valid = detect_institutional_bos(df_m15, h1_bias, atr_m15, sh_15, sl_15)
     
@@ -536,13 +532,13 @@ def detect_smc(h1_candles, m15_candles, m5_candles, m1_candles):
     liq_sweep = choch_res["sweep"]
 
     if not (liq_sweep and bos_valid and choch_valid):
-        return {"valid": False, "reason": f"HARD REJECT: Invalid Structure (No Displacement, No Sweep, or Weak Breakout) context: {h1_bias}"}
+        return {"valid": False, "reason": f"HARD REJECT: Invalid Structure (No Displacement, No Sweep, or Weak Breakout) context: {h1_bias}", "step": "M15_BOS", "bias": h1_bias}
         
     # 3 & 4. FVG Mitigation (M5 Displacement & Midpoint Rejection)
     fvg_res = detect_institutional_fvg(df_m5, h1_bias, atr_m5)
     
     if not fvg_res["valid"]:
-        return {"valid": False, "reason": "HARD REJECT: Weak or No FVG Mitigation (Requires midpoint mitigation and displacement)"}
+        return {"valid": False, "reason": "HARD REJECT: Weak or No FVG Mitigation (Requires midpoint mitigation and displacement)", "step": "FVG_WAIT", "bias": h1_bias}
     
     fvg_zone = fvg_res["zone"]
 
@@ -556,11 +552,10 @@ def detect_smc(h1_candles, m15_candles, m5_candles, m1_candles):
     body_last = abs(last_close - last_open)
     range_last = last_high - last_low
     
-    # HARD REJECT: Tiny momentum on entry
     if range_last < (atr_m1 * 0.3):
-        return {"valid": False, "reason": "HARD REJECT: M1 candle too small (No entry momentum)"}
+        return {"valid": False, "reason": "HARD REJECT: M1 candle too small (No entry momentum)", "step": "CHOCH_WAIT", "bias": h1_bias}
         
-    if body_last == 0: return {"valid": False, "reason": "HARD REJECT: Weak M1 entry confirmation (Doji)"}
+    if body_last == 0: return {"valid": False, "reason": "HARD REJECT: Weak M1 entry confirmation (Doji)", "step": "CHOCH_WAIT", "bias": h1_bias}
     
     rejection_type = "None"
     entry_valid = False
@@ -583,7 +578,7 @@ def detect_smc(h1_candles, m15_candles, m5_candles, m1_candles):
             entry_valid = True
 
     if not entry_valid:
-        return {"valid": False, "reason": "HARD REJECT: No strong M1 institutional entry confirmation (reversal / pinbar)"}
+        return {"valid": False, "reason": "HARD REJECT: No strong M1 institutional entry confirmation (reversal / pinbar)", "step": "CHOCH_WAIT", "bias": h1_bias}
 
     entry_price = float(last_close)
     
@@ -593,13 +588,13 @@ def detect_smc(h1_candles, m15_candles, m5_candles, m1_candles):
     if h1_bias == "bullish":
         sl = min([c['low'] for c in m1_candles[-15:]]) - buffer
         sl_dist = entry_price - sl
-        if sl_dist <= 0.05: return {"valid": False, "reason": "HARD REJECT: SL distance too small (Abnormal volatility calculation)"}
+        if sl_dist <= 0.05: return {"valid": False, "reason": "HARD REJECT: SL distance too small (Abnormal volatility calculation)", "step": "CHOCH_WAIT", "bias": h1_bias}
         tp1 = entry_price + (sl_dist * settings["tp1_rr"])
         tp2 = entry_price + (sl_dist * settings["tp2_rr"])
     else:
         sl = max([c['high'] for c in m1_candles[-15:]]) + buffer
         sl_dist = sl - entry_price
-        if sl_dist <= 0.05: return {"valid": False, "reason": "HARD REJECT: SL distance too small (Abnormal volatility calculation)"}
+        if sl_dist <= 0.05: return {"valid": False, "reason": "HARD REJECT: SL distance too small (Abnormal volatility calculation)", "step": "CHOCH_WAIT", "bias": h1_bias}
         tp1 = entry_price - (sl_dist * settings["tp1_rr"])
         tp2 = entry_price - (sl_dist * settings["tp2_rr"])
 
@@ -620,7 +615,8 @@ def detect_smc(h1_candles, m15_candles, m5_candles, m1_candles):
         "h1_bias": h1_bias,
         "liq_sweep": liq_sweep,
         "bos": bos_valid,
-        "rejection_type": rejection_type
+        "rejection_type": rejection_type,
+        "step": "AI_VALIDATION"
     }
         
 async def validate_with_gemini(signal_data: dict):
@@ -739,6 +735,8 @@ async def process_signal():
         result = detect_smc(h1, m15, m5, m1)
         
         if result["valid"]:
+            step = "SIGNAL_SENT"
+            bias = result["bias"]
             # Duplicate Signal Protection (Same Direction within 15 mins limits + Exact identical timestamp hash)
             signal_type = result["type"]
             c.execute('SELECT created_at_utc, timestamp FROM signals WHERE type = ? ORDER BY id DESC LIMIT 1', (signal_type,))
@@ -748,13 +746,13 @@ async def process_signal():
                     # Duplicate hashing check (same internal M1 candle timestamp or exact same generated string)
                     if last_same_dir[1] == result.get("timestamp"):
                         conn.close()
-                        return {"status": "no_signal", "reason": "HARD REJECT: Exact duplicate signal on same candle."}
+                        return {"status": "no_signal", "reason": "HARD REJECT: Exact duplicate signal on same candle.", "step": "AI_VALIDATION", "bias": bias}
                         
                     last_time = datetime.fromisoformat(last_same_dir[0])
                     elapsed_same_dir = (datetime.utcnow() - last_time).total_seconds()
                     if elapsed_same_dir < 900: # 15 minutes strict cooldown
                         conn.close()
-                        return {"status": "no_signal", "reason": f"HARD REJECT: Repeated Signal Blocked. Same direction '{signal_type}' within 15 mins ({int(900 - elapsed_same_dir)}s left)"}
+                        return {"status": "no_signal", "reason": f"HARD REJECT: Repeated Signal Blocked. Same direction '{signal_type}' within 15 mins ({int(900 - elapsed_same_dir)}s left)", "step": "AI_VALIDATION", "bias": bias}
                 except ValueError:
                     pass
                     
@@ -766,7 +764,7 @@ async def process_signal():
             if not ai_eval.get("valid", True) or conf < 87:
                 logger.info(f"AI REJECTED Setup. Conf: {conf}%. Reason: {reason}")
                 conn.close()
-                return {"status": "no_signal", "reason": f"HARD REJECT: AI Confidence < 87% ({conf}%) - {reason}"}
+                return {"status": "no_signal", "reason": f"HARD REJECT: AI Confidence < 87% ({conf}%) - {reason}", "step": "SIGNAL_CANCELLED", "bias": bias}
                 
             logger.info(f"AI APPROVED Setup. Conf: {conf}%.")
             created_at = datetime.utcnow()
@@ -809,10 +807,10 @@ async def process_signal():
             
             asyncio.create_task(notify_telegram(sig_obj))
             
-            return {"status": "signal", "data": sig_obj, "ai_reason": reason}
+            return {"status": "signal", "data": sig_obj, "ai_reason": reason, "step": step, "bias": bias}
         else:
             conn.close()
-            return {"status": "no_signal", "reason": result["reason"]}
+            return {"status": "no_signal", "reason": result["reason"], "step": result.get("step", ""), "bias": result.get("bias", "")}
 
     except Exception as e:
         logger.error(f"Error in process_signal: {str(e)}")
